@@ -55,7 +55,8 @@ services:
       - manus-network
 
   mongodb:
-    image: mongo:7.0
+    # image: mongo:7.0
+    image: docker.m.daocloud.io/library/mongo:7.0
     volumes:
       - mongodb_data:/data/db
     restart: unless-stopped
@@ -65,7 +66,8 @@ services:
       - manus-network
 
   redis:
-    image: redis:7.0
+    # image: redis:7.0
+    image: docker.m.daocloud.io/library/redis:7.0
     restart: unless-stopped
     networks:
       - manus-network
