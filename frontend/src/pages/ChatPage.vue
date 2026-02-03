@@ -518,7 +518,7 @@ onMounted(() => {
   if (routeParams.sessionId) {
     sessionId.value = String(routeParams.sessionId) as string; // URL 中包含 sessionId：直接切换到该会话
     // 通常是在别的页面/入口创建会话后，通过路由跳转把首条用户输入带过来，让 ChatPage 一进入就自动发起一次 chat()
-    const message = history.state?.message; // 是浏览器 History API 的临时状态，用于跨路由传递一次性数据
+    const message = history.state?.message; // history.state 是浏览器 History API 的临时状态，用于跨路由传递一次性数据
     const files: FileInfo[] = history.state?.files; // 从 history.state 取可能的附件
     history.replaceState({}, document.title); // 读取后清空 state，避免刷新/再次进入时重复发送同一条消息
     if (message) {
@@ -543,14 +543,15 @@ const isLastNoMessageTool = (tool: ToolContent) => {
 }
 
 // 判断工具是否“可视为实时”：正在调用或最近 5 分钟内的最后一次工具
+// 用来判断 某个工具调用是否“算作实时”，从而决定右侧工具面板是否显示为实时视图（比如 VNC 实时画面或轮询更新）
 const isLiveTool = (tool: ToolContent) => {
-  if (tool.status === 'calling') {
+  if (tool.status === 'calling') { // 正在调用 → 直接算实时
     return true;
   }
-  if (!isLastNoMessageTool(tool)) {
+  if (!isLastNoMessageTool(tool)) { // 不是最近一次非 message 工具 → 不算实时
     return false;
   }
-  if (tool.timestamp > Date.now() - 5 * 60 * 1000) {
+  if (tool.timestamp > Date.now() - 5 * 60 * 1000) { // 最近 5 分钟内的最后一次工具 → 算实时
     return true;
   }
   return false;
@@ -558,17 +559,17 @@ const isLiveTool = (tool: ToolContent) => {
 
 // 点击工具：打开右侧 ToolPanel 并切换到非实时回放
 const handleToolClick = (tool: ToolContent) => {
-  realTime.value = false;
-  if (sessionId.value) {
-    toolPanel.value?.showToolPanel(tool, isLiveTool(tool));
+  realTime.value = false; // 点击某条工具调用即切换为“回看模式”：展示当时内容/结果，不再跟随最新实时事件（工具面板会出现“Jump to live”）
+  if (sessionId.value) { // 确认已有会话再展示右侧面板
+    toolPanel.value?.showToolPanel(tool, isLiveTool(tool)); // 打开工具面板，是否实时由 isLiveTool 判断
   }
 }
 
 // 跳回实时：恢复 realTime 并展示最后一次工具
 const jumpToRealTime = () => {
-  realTime.value = true;
-  if (lastNoMessageTool.value) {
-    toolPanel.value?.showToolPanel(lastNoMessageTool.value, isLiveTool(lastNoMessageTool.value));
+  realTime.value = true; // 切回实时模式（跟随最新工具事件）
+  if (lastNoMessageTool.value) { // 如果有最近一次非 message 工具
+    toolPanel.value?.showToolPanel(lastNoMessageTool.value, isLiveTool(lastNoMessageTool.value)); // 展示最近工具并按实时状态渲染
   }
 }
 
