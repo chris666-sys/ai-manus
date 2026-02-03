@@ -29,6 +29,7 @@ SESSION_POLL_INTERVAL = 5
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
+# 前端在“新建会话/新任务”时通常先调用 PUT /sessions 获取一个新的 session_id，然后再进入聊天并发送消息
 @router.put("", response_model=APIResponse[CreateSessionResponse])
 async def create_session(
     current_user: User = Depends(get_current_user),

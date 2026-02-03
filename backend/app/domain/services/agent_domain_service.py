@@ -167,7 +167,7 @@ class AgentDomainService:
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
-           
+            
             # 4) 轮询任务输出流，将事件逐条产出（供 SSE 转发）
             while task and not task.done:
                 # 使用 start_id 支持断点续读；block_ms=0 表示非阻塞轮询

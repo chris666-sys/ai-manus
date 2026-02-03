@@ -212,55 +212,77 @@ class AgentTaskRunner(TaskRunner):
         """Process agent's message queue and run the agent's flow"""
         try:
             logger.info(f"Agent {self._agent_id} message processing task started")
+            # 确保沙盒已就绪（工具执行环境）
             await self._sandbox.ensure_sandbox()
+            # 初始化 MCP 工具配置（用于外部工具集成）
             await self._mcp_tool.initialized(await self._mcp_repository.get_mcp_config())
+            # 轮询输入队列，处理每条消息
             while not await task.input_stream.is_empty():
+                # 从输入队列取出一条事件（通常是 MessageEvent）
                 event = await self._pop_event(task)
                 message = ""
                 if isinstance(event, MessageEvent):
+                    # 提取用户消息内容，并将附件同步到沙盒
                     message = event.message or ""
                     await self._sync_message_attachments_to_sandbox(event)
                     
                 logger.info(f"Agent {self._agent_id} received new message: {message[:50]}...")
 
+                # 组装给 Flow 的 message 对象（仅含文本 + 附件路径）
                 message_obj = Message(message=message, attachments=[attachment.file_path for attachment in event.attachments])
                 
+                # 运行 flow，处理消息
                 async for event in self._run_flow(message_obj):
+                    # 将事件推入输出流并持久化到会话
                     await self._put_and_add_event(task, event)
+                    # 处理事件：更新标题、最新消息、未读计数、等待态等
                     if isinstance(event, TitleEvent):
+                        # 标题更新：同步到会话
                         await self._session_repository.update_title(self._session_id, event.title)
                     elif isinstance(event, MessageEvent):
+                        # 助手消息：更新最新消息并增加未读计数
                         await self._session_repository.update_latest_message(self._session_id, event.message, event.timestamp)
+                        # 增加未读计数
                         await self._session_repository.increment_unread_message_count(self._session_id)
                     elif isinstance(event, WaitEvent):
+                        # 进入等待态：更新会话状态并提前结束本轮任务
                         await self._session_repository.update_status(self._session_id, SessionStatus.WAITING)
                         return
+                    # 若输入队列还有消息，结束当前 flow，外层循环会取下一条
                     if not await task.input_stream.is_empty():
                         break
 
+            # 所有输入处理完毕：标记会话完成
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         except asyncio.CancelledError:
             logger.info(f"Agent {self._agent_id} task cancelled")
+            # 被取消时仍补一个 DoneEvent，并标记完成
             await self._put_and_add_event(task, DoneEvent())
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
         except Exception as e:
             logger.exception(f"Agent {self._agent_id} task encountered exception: {str(e)}")
+            # 异常：写入 ErrorEvent 并标记完成
             await self._put_and_add_event(task, ErrorEvent(error=f"Task error: {str(e)}"))
             await self._session_repository.update_status(self._session_id, SessionStatus.COMPLETED)
     
     async def _run_flow(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
         """Process a single message through the agent's flow and yield events"""
+        # 空消息直接返回错误事件，避免进入流程
         if not message.message:
             logger.warning(f"Agent {self._agent_id} received empty message")
             yield ErrorEvent(error="No message")
             return
 
+        # 运行 Plan-Act flow，逐条产出事件
         async for event in self._flow.run(message):
             if isinstance(event, ToolEvent):
+                # 工具事件：处理截图/文件等附加信息
                 # TODO: move to tool function
                 await self._handle_tool_event(event)
             elif isinstance(event, MessageEvent):
+                # 助手消息：同步附件到持久化存储
                 await self._sync_message_attachments_to_storage(event)
+            # 将事件继续抛给上层（输出流/SSE）
             yield event
 
         logger.info(f"Agent {self._agent_id} completed processing one message")
