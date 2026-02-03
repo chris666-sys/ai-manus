@@ -1,6 +1,8 @@
 <template>
+  <!-- 工具面板内容：标题 + 工具信息 + 具体工具视图 -->
   <div class="bg-[var(--background-gray-main)] sm:bg-[var(--background-menu-white)] sm:rounded-[22px] shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-[var(--border-light)] flex h-full w-full">
     <div class="flex-1 min-w-0 p-4 flex flex-col h-full">
+      <!-- 面板标题栏 -->
       <div class="flex items-center gap-2 w-full">
         <div class="text-[var(--text-primary)] text-lg font-semibold flex-1">{{ $t('Manus Computer') }}</div>
         <button
@@ -8,6 +10,7 @@
           <Minimize2 class="w-5 h-5 text-[var(--icon-tertiary)]" @click="hide" />
         </button>
       </div>
+      <!-- 当前工具简介（图标 + 名称 + 调用摘要） -->
       <div v-if="toolInfo" class="flex items-center gap-2 mt-2">
         <div
           class="w-[40px] h-[40px] bg-[var(--fill-tsp-gray-main)] rounded-lg flex items-center justify-center flex-shrink-0">
@@ -23,10 +26,13 @@
           </div>
         </div>
       </div>
+      <!-- 工具详情容器（动态切换 tool view） -->
       <div
         class="flex flex-col rounded-[12px] overflow-hidden bg-[var(--background-gray-main)] border border-[var(--border-dark)] dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
+        <!-- 根据 toolInfo.view 动态渲染工具视图 -->
         <component v-if="toolInfo" :is="toolInfo.view" :live="live" :sessionId="sessionId"
           :toolContent="toolContent" :isShare="isShare" />
+        <!-- 非实时模式下显示“跳转到实时”按钮 -->
         <div class="mt-auto flex w-full items-center gap-2 px-4 h-[44px] relative" v-if="!realTime">
           <button
             class="h-10 px-3 border border-[var(--border-main)] flex items-center gap-1 bg-[var(--background-white-main)] hover:bg-[var(--background-gray-main)] shadow-[0px_5px_16px_0px_var(--shadow-S),0px_0px_1.25px_0px_var(--shadow-S)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
@@ -54,6 +60,7 @@ const props = defineProps<{
   isShare: boolean;
 }>();
 
+// 从 toolContent 计算工具图标/名称/函数摘要/视图组件
 const { toolInfo } = useToolInfo(toRef(props, 'toolContent'));
 
 const emit = defineEmits<{
@@ -61,11 +68,13 @@ const emit = defineEmits<{
   (e: 'hide'): void
 }>();
 
+// 通知父组件隐藏面板
 const hide = () => {
   emit('hide');
 };
 
 
+// 通知父组件跳回实时视角
 const jumpToRealTime = () => {
   emit('jumpToRealTime');
 };

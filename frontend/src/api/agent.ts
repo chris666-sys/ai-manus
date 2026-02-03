@@ -87,17 +87,27 @@ export const chatWithSession = async (
   attachments?: string[],
   callbacks?: SSECallbacks<AgentSSEEvent['data']>
 ): Promise<() => void> => {
+  // 通过 SSE 与后端建立长连接，流式接收 Agent 事件
+  // 返回一个“取消函数”，用于中断本次 SSE 连接（如用户停止或切换会话）
+  // 指定 SSE 返回的数据类型是 AgentSSEEvent['data']，这样回调里 data 有类型提示。
   return createSSEConnection<AgentSSEEvent['data']>(
+    //SSE 接口地址，表示对这个会话发起聊天并持续接收事件流。
     `/sessions/${sessionId}/chat`,
     {
+      // POST 发起聊天请求，后端会用 SSE 持续推送事件
       method: 'POST',
       body: { 
+        // 用户消息内容
         message, 
+        // 发送时刻（秒级时间戳）
         timestamp: Math.floor(Date.now() / 1000), 
+        // 用于断点续传的事件 ID（从该事件之后继续推送）
         event_id: eventId,
+        // 附件列表（后端会转成 FileInfo 并写入消息事件）
         attachments
       }
     },
+    // SSE 回调：onOpen/onMessage/onClose/onError 在 ChatPage 中处理
     callbacks
   );
 };

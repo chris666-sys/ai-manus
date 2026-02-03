@@ -130,6 +130,21 @@ async def stream_sessions(
             await asyncio.sleep(SESSION_POLL_INTERVAL)
     return EventSourceResponse(event_generator())
 
+# 这段是 **聊天接口的 SSE 流式返回**：
+# - `@router.post("/{session_id}/chat")`：定义聊天入口，拿到 `session_id`、`ChatRequest`、当前用户和 `AgentService`。
+# - `event_generator()`：异步生成器。  
+#   - 调用 `agent_service.chat(...)`，它会不断产出领域事件（plan/step/tool/message 等）。
+#   - 每个事件先经过 `EventMapper.event_to_sse_event()` 转成 SSE 可发送的结构。
+#   - 如果有结果，就 `yield ServerSentEvent(event=..., data=...)`，把事件类型和 JSON 数据推给前端。
+# - `return EventSourceResponse(event_generator())`：把这个生成器包装成 SSE 响应流，前端能边执行边收到事件。
+# 简而言之：**这是“聊天请求 → 后端流式产出事件 → 通过 SSE 推送给前端”的核心桥梁**。
+#
+# 这里的 `yield` 是在 **异步生成器** 里“逐条产出”结果。
+# 具体作用：
+# - `event_generator()` 是 `async def`，返回一个**异步生成器**。
+# - `yield ServerSentEvent(...)` 会把**当前这一条 SSE 事件**推送给 `EventSourceResponse`。
+# - 函数不会结束，而是等下一次事件再继续 `yield`，所以前端能实时收到一条条事件流。
+# 简而言之：`yield` 让 SSE 变成 **边生成边推送** 的流式输出。
 @router.post("/{session_id}/chat")
 async def chat(
     session_id: str,

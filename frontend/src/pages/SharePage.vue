@@ -1,6 +1,8 @@
 <template>
+  <!-- 共享会话页面：只读回放 + 工具面板 + 复制链接 -->
   <SimpleBar ref="simpleBarRef" @scroll="handleScroll">
     <div class="relative flex flex-col h-full flex-1 min-w-0 px-5">
+      <!-- 顶部分享页头部：Logo / 标题 / 快捷按钮 -->
       <header class="sm:h-auto sticky top-0 left-0 right-0 z-10" style="background: var(--background-share-header);">
         <div
           class="min-h-[52px] px-[16px] py-[10px] sm:px-5 sm:py-3 items-center flex justify-between bg-[var(--background-gray-main)]">
@@ -10,13 +12,16 @@
                 <ManusLogoTextIcon :height="30" :width="65" />
               </div>
             </a>
+            <!-- 移动端标题 -->
             <div
               class="text-[var(--text-primary)] text-lg font-[600] leading-[24px] flex-1 min-w-0 text-left sm:text-center sm:hidden overflow-hidden text-ellipsis whitespace-nowrap">
               {{ title }}</div>
           </div>
+          <!-- 桌面端标题 -->
           <div
             class="text-lg font-medium text-[var(--text-primary)] flex-1 min-w-0 text-center hidden sm:block overflow-hidden text-ellipsis whitespace-nowrap">
             {{ title }}</div>
+          <!-- 右侧快捷入口：复制分享链接 / 文件列表 -->
           <div class="flex items-center sm:gap-3"><button @click="handleCopyLink"
               class="p-2 flex items-center justify-center hover:bg-[var(--fill-tsp-white-dark)] rounded-lg cursor-pointer">
               <Link class="text-[var(--icon-secondary)]" :size="20" />
@@ -27,7 +32,9 @@
           </div>
         </div>
       </header>
+      <!-- 内容区：消息列表 + 回放状态条 -->
       <div class="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+        <!-- 消息列表（回放时逐条渲染） -->
         <div class="flex flex-col w-full gap-[12px] pb-[80px] pt-[12px] flex-1 overflow-y-auto">
           <ChatMessage v-for="(message, index) in messages" :key="index" :message="message"
             @toolClick="handleToolClick" />
@@ -36,11 +43,14 @@
           <LoadingIndicator v-if="isLoading" :text="$t('Thinking')" />
         </div>
 
+        <!-- 底部回放状态条：Plan 面板 + 回放控制 -->
         <div class="sticky bottom-0 max-w-[800px] mx-auto w-full pb-3 flex flex-col gap-2 px-3 pt-2.5 sm:pt-0">
+          <!-- 未跟随时显示回到底部按钮 -->
           <button @click="handleFollow" v-if="!follow"
             class="flex items-center justify-center w-[36px] h-[36px] rounded-full bg-[var(--background-white-main)] hover:bg-[var(--background-gray-main)] clickable border border-[var(--border-main)] shadow-[0px_5px_16px_0px_var(--shadow-S),0px_0px_1.25px_0px_var(--shadow-S)] absolute -top-20 left-1/2 -translate-x-1/2">
             <ArrowDown class="text-[var(--icon-primary)]" :size="20" />
           </button>
+          <!-- 计划面板（只读） -->
           <PlanPanel v-if="plan && plan.steps.length > 0" :plan="plan" />
           <div
             class="bg-[var(--background-white-main)] rounded-xl border border-[var(--border-main)] shadow-[0px_5px_16px_0px_var(--shadow-S),0px_0px_1.25px_0px_var(--shadow-XS)] backdrop-blur-3xl flex items-center justify-between py-[9px] pr-3 pl-4 sm:flex-row flex-col max-sm:gap-3 max-sm:p-2">
@@ -51,6 +61,7 @@
               </div>
             </div>
             <div class="flex items-center flex-row gap-[8px] max-sm:w-full">
+              <!-- 回放控制：重放 / 跳到结果 -->
               <button @click="replayCompleted ? replay() : (jumpToEnd = true)"
                 class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors hover:opacity-90 active:opacity-80 bg-[var(--Button-primary-brand)] text-[var(--text-white)] h-[36px] rounded-[10px] gap-[6px] text-sm min-w-16 px-[14px] py-[6px] max-sm:w-1/2"><span
                   class="text-sm">{{ replayCompleted ? '重放' : '跳转到结果' }}</span></button>
@@ -61,6 +72,7 @@
       </div>
     </div>
 
+    <!-- 回放遮罩：倒计时开始回放 -->
     <div v-if="showReplayOverlay"
       class="fixed bottom-0 left-0 right-0 h-[calc(100vh - 156px)] z-50 flex items-center justify-center"
       style="height: calc(-156px + 100vh); background: linear-gradient(rgba(255, 255, 255, 0) 5.99%, rgb(255, 255, 255) 35.84%);">
@@ -83,6 +95,7 @@
         </div>
       </div>
     </div>
+    <!-- 右侧工具面板（回放模式，不走实时） -->
     <ToolPanel ref="toolPanel" :size="toolPanelSize" :sessionId="sessionId" :realTime="realTime"
       :isShare="true"
       @jumpToRealTime="jumpToRealTime" />
@@ -90,6 +103,7 @@
 </template>
 
 <script setup lang="ts">
+// 页面职责：共享会话回放（只读），不建立实时 SSE
 import SimpleBar from '../components/SimpleBar.vue';
 import { ref, onMounted, onUnmounted, watch, nextTick, reactive, toRefs } from 'vue';
 import { useRouter } from 'vue-router';
@@ -117,12 +131,13 @@ import { useFilePanel } from '../composables/useFilePanel'
 import LoadingIndicator from '@/components/ui/LoadingIndicator.vue';
 import { copyToClipboard } from '../utils/dom'
 
+// 路由与国际化
 const router = useRouter()
 const { t } = useI18n()
 const { showSessionFileList } = useSessionFileList()
 const { hideFilePanel } = useFilePanel()
 
-// Create initial state factory
+// 初始状态工厂（回放页面需要额外状态）
 const createInitialState = () => ({
   inputMessage: '',
   isLoading: false,
@@ -144,10 +159,10 @@ const createInitialState = () => ({
   replayCompleted: false,
 });
 
-// Create reactive state
+// 创建响应式状态
 const state = reactive(createInitialState());
 
-// Destructure refs from reactive state
+// 解构为 refs 方便模板与逻辑使用
 const {
   isLoading,
   sessionId,
@@ -166,12 +181,12 @@ const {
   replayCompleted,
 } = toRefs(state);
 
-// Non-state refs that don't need reset
+// 非状态型 refs
 const toolPanel = ref<InstanceType<typeof ToolPanel>>()
 const simpleBarRef = ref<InstanceType<typeof SimpleBar>>();
 let countdownTimer: number | null = null;
 
-// Watch message changes and automatically scroll to bottom
+// 监听消息变化：在 follow 模式下自动滚动到底部
 watch(messages, async () => {
   await nextTick();
   if (follow.value) {
@@ -181,11 +196,12 @@ watch(messages, async () => {
 
 
 
+// 获取最后一个 step（用于挂载工具）
 const getLastStep = (): StepContent | undefined => {
   return messages.value.filter(message => message.type === 'step').pop()?.content as StepContent;
 }
 
-// Handle message event
+// 处理 message 事件（回放也复用该逻辑）
 const handleMessageEvent = (messageData: MessageEventData) => {
   messages.value.push({
     type: messageData.role,
@@ -204,7 +220,7 @@ const handleMessageEvent = (messageData: MessageEventData) => {
   }
 }
 
-// Handle tool event
+// 处理 tool 事件：同 tool_call_id 更新，否则挂到当前 step 或单独展示
 const handleToolEvent = (toolData: ToolEventData) => {
   const lastStep = getLastStep();
   let toolContent: ToolContent = {
@@ -231,7 +247,7 @@ const handleToolEvent = (toolData: ToolEventData) => {
   }
 }
 
-// Handle step event
+// 处理 step 事件：running 新增 step，completed 更新状态
 const handleStepEvent = (stepData: StepEventData) => {
   const lastStep = getLastStep();
   if (stepData.status === 'running') {
@@ -251,7 +267,7 @@ const handleStepEvent = (stepData: StepEventData) => {
   }
 }
 
-// Handle error event
+// 处理 error 事件
 const handleErrorEvent = (errorData: ErrorEventData) => {
   isLoading.value = false;
   messages.value.push({
@@ -263,17 +279,17 @@ const handleErrorEvent = (errorData: ErrorEventData) => {
   });
 }
 
-// Handle title event
+// 处理 title 事件
 const handleTitleEvent = (titleData: TitleEventData) => {
   title.value = titleData.title;
 }
 
-// Handle plan event
+// 处理 plan 事件
 const handlePlanEvent = (planData: PlanEventData) => {
   plan.value = planData;
 }
 
-// Main event handler function
+// 事件分发入口（与 ChatPage 同逻辑）
 const handleEvent = (event: AgentSSEEvent) => {
   if (event.event === 'message') {
     handleMessageEvent(event.data as MessageEventData);
@@ -295,12 +311,13 @@ const handleEvent = (event: AgentSSEEvent) => {
   lastEventId.value = event.data.event_id;
 }
 
-// Reset all refs to their initial values
+// 重置页面状态（回放前清理）
 const resetState = () => {
   // Reset reactive state to initial values
   Object.assign(state, createInitialState());
 };
 
+// 回放：按历史事件逐条回放到 UI（可选择跳过延时）
 const replay = async () => {
   if (!sessionId.value) {
     showErrorToast(t('Session not found'));
@@ -323,6 +340,7 @@ const replay = async () => {
   replayCompleted.value = true;
 }
 
+// 恢复共享会话：拉取历史事件并渲染（非实时）
 const restoreSession = async () => {
   if (!sessionId.value) {
     showErrorToast(t('Session not found'));
@@ -337,7 +355,7 @@ const restoreSession = async () => {
   realTime.value = true;
 }
 
-// Start countdown timer
+// 倒计时开始回放
 const startCountdown = () => {
   if (countdownTimer) {
     clearInterval(countdownTimer);
@@ -352,7 +370,7 @@ const startCountdown = () => {
   }, 1000);
 }
 
-// Start replay (hide overlay and clear timer)
+// 立即开始回放（隐藏遮罩）
 const startReplay = () => {
   if (countdownTimer) {
     clearInterval(countdownTimer);
@@ -362,7 +380,7 @@ const startReplay = () => {
   replay();
 }
 
-// Initialize active conversation
+// 初始化：进入分享页时恢复会话并启动倒计时
 onMounted(() => {
   hideFilePanel();
   const routeParams = router.currentRoute.value.params;
@@ -377,7 +395,7 @@ onMounted(() => {
   }
 });
 
-// Clean up timer on unmount
+// 组件卸载：清理计时器
 onUnmounted(() => {
   if (countdownTimer) {
     clearInterval(countdownTimer);
@@ -385,6 +403,7 @@ onUnmounted(() => {
   }
 });
 
+// 点击工具：打开右侧 ToolPanel
 const handleToolClick = (tool: ToolContent) => {
   realTime.value = false;
   if (sessionId.value) {
@@ -392,6 +411,7 @@ const handleToolClick = (tool: ToolContent) => {
   }
 }
 
+// 跳回“实时视角”（分享页仅切换显示）
 const jumpToRealTime = () => {
   realTime.value = true;
   if (lastNoMessageTool.value) {
@@ -399,19 +419,23 @@ const jumpToRealTime = () => {
   }
 }
 
+// 手动回到底部
 const handleFollow = () => {
   follow.value = true;
   simpleBarRef.value?.scrollToBottom();
 }
 
+// 滚动时更新 follow 状态
 const handleScroll = (_: Event) => {
   follow.value = simpleBarRef.value?.isScrolledToBottom() ?? false;
 }
 
+// 打开共享会话文件列表
 const handleFileListShow = () => {
   showSessionFileList(true)
 }
 
+// 复制分享链接
 const handleCopyLink = async () => {
   if (!sessionId.value) return;
   const shareUrl = `${window.location.origin}/share/${sessionId.value}`;

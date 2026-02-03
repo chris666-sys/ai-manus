@@ -36,6 +36,7 @@ export function useToolInfo(tool?: Ref<ToolContent | undefined>) {
     
     let functionArg = tool.value.args[TOOL_FUNCTION_ARG_MAP[tool.value.function]] || '';
     if (TOOL_FUNCTION_ARG_MAP[tool.value.function] === 'file') {
+      // 去除文件路径中的 /home/ubuntu/ 前缀
       functionArg = functionArg.replace(/^\/home\/ubuntu\//, '');
     }
     

@@ -40,6 +40,16 @@ export const TOOL_FUNCTION_MAP: {[key: string]: string} = {
 
 /**
  * Display name mapping for tool function parameters
+ * shell_exec 显示 args.command
+ * browser_navigate 显示 args.url
+ * browser_click 显示 args.element
+ * browser_input 显示 args.text
+ * browser_move_mouse 显示 args.position
+ * browser_press_key 显示 args.key
+ * browser_select_option 显示 args.option
+ * browser_scroll_up 显示 args.page
+ * browser_scroll_down 显示 args.page
+ * browser_console_exec 显示 args.code
  */
 export const TOOL_FUNCTION_ARG_MAP: {[key: string]: string} = {
   "shell_exec": "command",

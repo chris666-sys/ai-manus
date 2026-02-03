@@ -127,49 +127,65 @@ class AgentDomainService:
         """
 
         try:
+            # 1) 校验会话归属与存在性，避免用户访问他人或不存在的会话
             session = await self._session_repository.find_by_id_and_user_id(session_id, user_id)
             if not session:
                 logger.error(f"Attempted to chat with non-existent Session {session_id} for user {user_id}")
                 raise RuntimeError("Session not found")
 
+            # 2) 获取当前会话对应的任务（若已存在则复用）
             task = await self._get_task(session)
 
+            # 3) 如果有新消息，确保任务处于可运行状态并写入输入流
             if message:
+                # 会话不在运行中则创建新任务，保证后续可消费输入流
                 if session.status != SessionStatus.RUNNING:
                     task = await self._create_task(session)
                     if not task:
                         raise RuntimeError("Failed to create task")
                 
+                # 更新会话的最新消息与时间戳，便于历史记录与列表展示
                 await self._session_repository.update_latest_message(session_id, message, timestamp or datetime.now())
 
+                # 组装用户消息事件（包含附件），用于驱动后端流程
                 message_event = MessageEvent(
                     message=message, 
                     role="user", 
                     attachments=[FileInfo(file_id=attachment["file_id"], filename=attachment["filename"]) for attachment in attachments] if attachments else None
                 )
 
+                # 将消息写入任务输入流，触发 Plan-Act 处理
                 event_id = await task.input_stream.put(message_event.model_dump_json())
 
+                # 记录事件 ID 并持久化，保证事件可回放
                 message_event.id = event_id
                 await self._session_repository.add_event(session_id, message_event)
                 
+                # 启动或唤醒任务执行（异步流式输出）
                 await task.run()
                 logger.debug(f"Put message into Session {session_id}'s event queue: {message[:50]}...")
             
             logger.info(f"Session {session_id} started")
             logger.debug(f"Session {session_id} task: {task}")
            
+            # 4) 轮询任务输出流，将事件逐条产出（供 SSE 转发）
             while task and not task.done:
+                # 使用 start_id 支持断点续读；block_ms=0 表示非阻塞轮询
                 event_id, event_str = await task.output_stream.get(start_id=latest_event_id, block_ms=0)
                 latest_event_id = event_id
                 if event_str is None:
                     logger.debug(f"No event found in Session {session_id}'s event queue")
                     continue
+                # 反序列化为领域事件并补齐 ID
+                # 用 Pydantic 根据 AgentEvent 的联合类型定义自动识别并反序列化成具体事件类（如 PlanEvent / ToolEvent / MessageEvent 等）
                 event = TypeAdapter(AgentEvent).validate_json(event_str)
                 event.id = event_id
                 logger.debug(f"Got event from Session {session_id}'s event queue: {type(event).__name__}")
+                # 读到事件则清零未读计数，避免消息红点累积
                 await self._session_repository.update_unread_message_count(session_id, 0)
+                # 将事件产出给上层（最终会被 SSE 发送给前端）
                 yield event
+                # 遇到终止/等待/异常事件则结束本轮流式输出
                 if isinstance(event, (DoneEvent, ErrorEvent, WaitEvent)):
                     break
             
@@ -177,8 +193,10 @@ class AgentDomainService:
 
         except Exception as e:
             logger.exception(f"Error in Session {session_id}")
+            # 出错时生成 ErrorEvent，保证前端能收到可见错误
             event = ErrorEvent(error=str(e))
             await self._session_repository.add_event(session_id, event)
             yield event # TODO: raise api exception
         finally:
+            # 无论成功或异常，都清零未读计数，保持会话状态一致
             await self._session_repository.update_unread_message_count(session_id, 0)
