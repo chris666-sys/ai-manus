@@ -481,60 +481,52 @@ const chat = async (message: string = '', files: FileInfo[] = []) => {
 
 // 恢复历史会话：拉取事件并重放到本地状态
 const restoreSession = async () => {
-  if (!sessionId.value) {
+  if (!sessionId.value) { // 无 sessionId 时直接提示错误
     showErrorToast(t('Session not found'));
     return;
   }
-  const session = await agentApi.getSession(sessionId.value);
-  // Initialize share mode based on session state
-  shareMode.value = session.is_shared ? 'public' : 'private';
-  realTime.value = false;
+  const session = await agentApi.getSession(sessionId.value); // 拉取会话详情（含历史事件）
+  shareMode.value = session.is_shared ? 'public' : 'private'; // 根据会话共享状态初始化分享模式
+  realTime.value = false; // 回放历史事件时关闭 realTime，避免触发实时工具面板逻辑
   for (const event of session.events) {
-    handleEvent(event);
+    handleEvent(event); // 逐条回放到 messages/plan/title 等状态
   }
-  realTime.value = true;
-  // 如果会话仍在运行或待运行，则续接 SSE
+  realTime.value = true; // 回放结束后恢复 realTime
   if (session.status === SessionStatus.RUNNING || session.status === SessionStatus.PENDING) {
     await chat();
   }
-  agentApi.clearUnreadMessageCount(sessionId.value);
+  agentApi.clearUnreadMessageCount(sessionId.value); // 清空未读计数（避免列表红点残留）
 }
-
-
 
 // 路由切换：清理面板与状态，加载新会话
 onBeforeRouteUpdate((to, _, next) => {
-  toolPanel.value?.hideToolPanel();
+  toolPanel.value?.hideToolPanel(); // 路由切换前先关闭右侧面板，避免旧会话残留
   hideFilePanel();
-  resetState();
-  if (to.params.sessionId) {
-    messages.value = [];
-    sessionId.value = String(to.params.sessionId) as string;
-    restoreSession();
+  resetState(); // 重置页面状态（清理消息、取消 SSE 等）
+  if (to.params.sessionId) { // 路由切换到已有会话（通过 sessionId 定位）
+    messages.value = []; // 切换到新的会话：清空消息
+    sessionId.value = String(to.params.sessionId) as string; // 设置新的 sessionId
+    restoreSession(); // 恢复新会话：拉取历史事件并回放到本地状态
   }
   next();
 })
 
 // 初始化：进入页面时恢复或启动会话
 onMounted(() => {
-  hideFilePanel();
-  const routeParams = router.currentRoute.value.params;
+  hideFilePanel(); // 初始化时先收起文件面板
+  const routeParams = router.currentRoute.value.params; // 读取路由参数
   if (routeParams.sessionId) {
-    // If sessionId is included in URL, use it directly
-    sessionId.value = String(routeParams.sessionId) as string;
-    // Get initial message from history.state
-    const message = history.state?.message;
-    const files: FileInfo[] = history.state?.files;
-    history.replaceState({}, document.title);
-    // 如果带了初始消息则直接发起，否则恢复历史
+    sessionId.value = String(routeParams.sessionId) as string; // URL 中包含 sessionId：直接切换到该会话
+    // 通常是在别的页面/入口创建会话后，通过路由跳转把首条用户输入带过来，让 ChatPage 一进入就自动发起一次 chat()
+    const message = history.state?.message; // 是浏览器 History API 的临时状态，用于跨路由传递一次性数据
+    const files: FileInfo[] = history.state?.files; // 从 history.state 取可能的附件
+    history.replaceState({}, document.title); // 读取后清空 state，避免刷新/再次进入时重复发送同一条消息
     if (message) {
-      chat(message, files);
+      chat(message, files); // 表示“新创建会话后带着首条用户输入进来”，立即发起一次任务，直接发起一次对话
     } else {
-      restoreSession();
+      restoreSession(); // 无初始消息：恢复历史会话；表示“只是打开已有会话”，走 restoreSession() 回放历史。
     }
   }
-
-
 });
 
 // 组件销毁：停止 SSE，避免泄漏
