@@ -96,23 +96,31 @@ class PlanActFlow(BaseFlow):
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
 
         # TODO: move to task runner
+        # 加载会话并根据其状态初始化流程状态。
         session = await self._session_repository.find_by_id(self._session_id)
         if not session:
             raise ValueError(f"Session {self._session_id} not found")
         
         if session.status != SessionStatus.PENDING:
+            # 非新建会话，回滚可能存在的中间状态。保证从一个干净一致的状态重新开始，避免“上一次中断/失败”的残留影响本次流程。
             logger.debug(f"Session {self._session_id} is not in PENDING status, rolling back")
+            # 把执行阶段可能留下的中间状态清理掉（例如之前执行到一半、产生了上下文/工具状态但没完成的情况）。
             await self.executor.roll_back(message)
+            # 把规划阶段可能留下的中间状态清理掉（比如上次生成计划过程中留下的状态或上下文）。
             await self.planner.roll_back(message)
         
         if session.status == SessionStatus.RUNNING:
+            # 已在运行状态，恢复到规划阶段。
             logger.debug(f"Session {self._session_id} is in RUNNING status")
             self.status = AgentStatus.PLANNING
 
         if session.status == SessionStatus.WAITING:
+            # 等待下一步时，恢复到执行阶段。
             logger.debug(f"Session {self._session_id} is in WAITING status")
             self.status = AgentStatus.EXECUTING
 
+        # 更新为运行中，并加载最近一次计划（如果存在）。
+        # 把会话状态统一更新为 RUNNING 是因为进入 run() 就开始处理消息，无论是新建、恢复还是等待中的会话，都会进入实际执行流程（规划/执行/更新）
         await self._session_repository.update_status(self._session_id, SessionStatus.RUNNING)  
         self.plan = session.get_last_plan()
 
