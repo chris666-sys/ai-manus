@@ -161,30 +161,38 @@ class BaseAgent(ABC):
             response_format = {"type": format}
         
         for _ in range(self.max_retries):
+            # 请求 LLM，根据记忆消息生成回复
             message = await self.llm.ask(self.memory.get_messages(), 
                                             tools=self.get_available_tools(), 
                                             response_format=response_format,
                                             tool_choice=self.tool_choice)
 
+            # 过滤消息，仅保留 assistant 角色的返回
             filtered_message = {}
+            # 仅处理 assistant 角色的返回
             if message.get("role") == "assistant":
                 if not message.get("content") and not message.get("tool_calls"):
+                    # 返回既无内容也无工具调用，写入提示并重试
                     logger.warning(f"Assistant message has no content, retry")
                     await self._add_to_memory([
                         {"role": "assistant", "content": ""},
                         {"role": "user", "content": "no thinking, please continue"}
                     ])
                     continue
+                # 只保留必要字段，避免污染记忆
                 filtered_message = {
                     "role": "assistant",
                     "content": message.get("content"),
                 }
                 if message.get("tool_calls"):
+                    # 只保留一个工具调用，避免多工具并行
                     filtered_message["tool_calls"] = message.get("tool_calls")[:1]
             else:
+                # 非 assistant 角色原样记录并告警
                 logger.warning(f"Unknown message role: {message.get('role')}")
                 filtered_message = message
             
+            # 记录到记忆并返回
             await self._add_to_memory([filtered_message])
             return filtered_message
         raise Exception(f"Empty response from LLM after {self.max_retries} retries")

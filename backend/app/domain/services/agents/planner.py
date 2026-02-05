@@ -64,6 +64,7 @@ class PlannerAgent(BaseAgent):
         async for event in self.execute(message):
             if isinstance(event, MessageEvent):
                 logger.info(event.message)
+                # 解析模型回复并校验为 Plan，生成创建完成事件
                 parsed_response = await self.json_parser.parse(event.message)
                 plan = Plan.model_validate(parsed_response)
                 yield PlanEvent(status=PlanStatus.CREATED, plan=plan)
