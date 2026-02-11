@@ -219,7 +219,7 @@ async def view_file(
 async def vnc_websocket(
     websocket: WebSocket,
     session_id: str,
-    signature: str = Depends(verify_signature_websocket),
+    signature: str = Depends(verify_signature_websocket),# 触发签名验证的依赖
     agent_service: AgentService = Depends(get_agent_service)
 ) -> None:
     """VNC WebSocket endpoint (binary mode)
