@@ -246,33 +246,45 @@ async def vnc_websocket(
         async with websockets.connect(sandbox_ws_url) as sandbox_ws:
             logger.info(f"Connected to VNC WebSocket at {sandbox_ws_url}")
             # Create two tasks to forward data bidirectionally
+            # 定义从浏览器客户端转发数据到沙箱 VNC 服务的协程
+            # 作用：接收用户在前端的鼠标/键盘等操作，转发给沙箱中的 VNC 服务器
             async def forward_to_sandbox():
-                try:
+                try:    
                     while True:
+                        # 从前端 WebSocket 连接接收二进制数据（VNC 协议数据）
                         data = await websocket.receive_bytes()
+                        # 将接收到的数据转发到沙箱的 VNC WebSocket 连接
                         await sandbox_ws.send(data)
                 except WebSocketDisconnect:
+                    # 前端 WebSocket 断开连接（用户关闭页面等），正常退出
                     logger.info("Web -> VNC connection closed")
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data to sandbox: {e}")
             
+            # 定义从沙箱 VNC 服务转发数据到浏览器客户端的协程
+            # 作用：将沙箱桌面的画面更新推送给前端，实现远程桌面实时显示
             async def forward_from_sandbox():
                 try:
                     while True:
+                        # 从沙箱 VNC WebSocket 接收二进制数据（屏幕画面更新等）
                         data = await sandbox_ws.recv()
+                        # 将数据转发给前端 WebSocket 连接，供前端渲染显示
                         await websocket.send_bytes(data)
                 except websockets.exceptions.ConnectionClosed:
+                    # 沙箱端 VNC WebSocket 连接关闭（沙箱销毁等），正常退出
                     logger.info("VNC -> Web connection closed")
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data from sandbox: {e}")
             
-            # Run two forwarding tasks concurrently
+            # 将两个转发协程作为异步任务并发运行，实现双向数据转发
+            # 形成 "浏览器 <-> 本服务 <-> 沙箱VNC" 的双向代理通道
             forward_task1 = asyncio.create_task(forward_to_sandbox())
             forward_task2 = asyncio.create_task(forward_from_sandbox())
             
-            # Wait for either task to complete (meaning connection has closed)
+            # 等待任意一个任务完成（即任一方向的连接断开）
+            # 一旦有一端断开，整个代理通道就没有继续运行的意义了
             done, pending = await asyncio.wait(
                 [forward_task1, forward_task2],
                 return_when=asyncio.FIRST_COMPLETED
@@ -280,7 +292,8 @@ async def vnc_websocket(
 
             logger.info("WebSocket connection closed")
             
-            # Cancel pending tasks
+            # 取消尚未完成的任务，避免协程泄漏
+            # 例如：如果前端断开了，就取消"从沙箱转发到前端"的任务，反之亦然
             for task in pending:
                 task.cancel()
     
