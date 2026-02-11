@@ -219,7 +219,7 @@ async def view_file(
 async def vnc_websocket(
     websocket: WebSocket,
     session_id: str,
-    signature: str = Depends(verify_signature_websocket),# 触发签名验证的依赖
+    signature: str = Depends(verify_signature_websocket),#signatur没有使用，是为触发FastAPI验证签名
     agent_service: AgentService = Depends(get_agent_service)
 ) -> None:
     """VNC WebSocket endpoint (binary mode)
@@ -232,59 +232,77 @@ async def vnc_websocket(
         session_id: Session ID
         signature: Verified signature from dependency injection
     """
-    
+    # 这是 WebSocket 握手的服务端接受操作。subprotocol="binary" 指定了子协议为 binary（二进制），告知客户端（前端 noVNC）本连接将以二进制模式传输数据。
+    # 这两行的时序关系：
+    # 前端发起 WebSocket 连接请求 ws://.../session/xxx/vnc?signature=abc123
+    # FastAPI 先执行 Depends(verify_signature_websocket) 验证签名 ← 第 222 行
+    # 验证通过后，服务端接受 WebSocket 握手，协商 binary 子协议 ← 第 236 行
+    # 之后才开始双向数据转发
+    # 如果第 2 步签名验证失败，就不会执行到第 3 步，连接直接被拒绝。
     await websocket.accept(subprotocol="binary")
     logger.info(f"Accepted WebSocket connection for session {session_id}")
     
     try:
-        # Get sandbox environment address with user validation
+        # ======================================================================
+        # WebSocket 双向代理：VNC 远程桌面转发
+        # 
+        # 架构链路（对应架构图中的 "websocket forward" 模块）：
+        #
+        #   Manus Web (noVNC)  <--WebSocket-->  Manus Server  <--WebSocket-->  Ubuntu Sandbox (websockify)
+        #        前端                          本段代码(代理)                       沙箱
+        #
+        # 沙箱内部链路：websockify -> x11vnc -> xvfb（虚拟帧缓冲）
+        # 前端 noVNC 组件通过本代理与沙箱内的 websockify 通信，实现远程桌面访问。
+        # ======================================================================
+
+        # 根据 session_id 获取沙箱的 websockify 地址（即 VNC over WebSocket 的 URL）
         sandbox_ws_url = await agent_service.get_vnc_url(session_id)
 
         logger.info(f"Connecting to VNC WebSocket at {sandbox_ws_url}")
     
-        # Connect to sandbox WebSocket
+        # 与沙箱内的 websockify 建立 WebSocket 连接（Manus Server -> Sandbox 的右半段链路）
         async with websockets.connect(sandbox_ws_url) as sandbox_ws:
             logger.info(f"Connected to VNC WebSocket at {sandbox_ws_url}")
-            # Create two tasks to forward data bidirectionally
-            # 定义从浏览器客户端转发数据到沙箱 VNC 服务的协程
-            # 作用：接收用户在前端的鼠标/键盘等操作，转发给沙箱中的 VNC 服务器
+
+            # --- 上行通道：noVNC(前端) -> Manus Server -> websockify(沙箱) ---
+            # 用户在前端 noVNC 上的操作（鼠标移动/点击、键盘输入等）
+            # 被编码为 RFB 协议二进制帧，经由本代理转发到沙箱的 websockify
             async def forward_to_sandbox():
                 try:    
                     while True:
-                        # 从前端 WebSocket 连接接收二进制数据（VNC 协议数据）
+                        # 接收前端 noVNC 发来的二进制数据（RFB 协议帧）
                         data = await websocket.receive_bytes()
-                        # 将接收到的数据转发到沙箱的 VNC WebSocket 连接
+                        # 原样转发给沙箱的 websockify
                         await sandbox_ws.send(data)
                 except WebSocketDisconnect:
-                    # 前端 WebSocket 断开连接（用户关闭页面等），正常退出
+                    # 前端断开（用户关闭/刷新页面），上行通道正常结束
                     logger.info("Web -> VNC connection closed")
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data to sandbox: {e}")
             
-            # 定义从沙箱 VNC 服务转发数据到浏览器客户端的协程
-            # 作用：将沙箱桌面的画面更新推送给前端，实现远程桌面实时显示
+            # --- 下行通道：websockify(沙箱) -> Manus Server -> noVNC(前端) ---
+            # 沙箱桌面的画面变化由 xvfb -> x11vnc -> websockify 产生，
+            # 本代理将这些画面更新帧转发给前端 noVNC 进行渲染
             async def forward_from_sandbox():
                 try:
                     while True:
-                        # 从沙箱 VNC WebSocket 接收二进制数据（屏幕画面更新等）
+                        # 接收沙箱 websockify 发来的二进制数据（屏幕更新帧）
                         data = await sandbox_ws.recv()
-                        # 将数据转发给前端 WebSocket 连接，供前端渲染显示
+                        # 原样转发给前端 noVNC
                         await websocket.send_bytes(data)
                 except websockets.exceptions.ConnectionClosed:
-                    # 沙箱端 VNC WebSocket 连接关闭（沙箱销毁等），正常退出
+                    # 沙箱端连接关闭（沙箱销毁/重启等），下行通道正常结束
                     logger.info("VNC -> Web connection closed")
                     pass
                 except Exception as e:
                     logger.error(f"Error forwarding data from sandbox: {e}")
             
-            # 将两个转发协程作为异步任务并发运行，实现双向数据转发
-            # 形成 "浏览器 <-> 本服务 <-> 沙箱VNC" 的双向代理通道
+            # 将上行和下行两个通道，分别作为异步任务并发运行，形成全双工代理
             forward_task1 = asyncio.create_task(forward_to_sandbox())
             forward_task2 = asyncio.create_task(forward_from_sandbox())
             
-            # 等待任意一个任务完成（即任一方向的连接断开）
-            # 一旦有一端断开，整个代理通道就没有继续运行的意义了
+            # 等待任一通道关闭——任一方向断开意味着代理链路已失效
             done, pending = await asyncio.wait(
                 [forward_task1, forward_task2],
                 return_when=asyncio.FIRST_COMPLETED
@@ -292,8 +310,7 @@ async def vnc_websocket(
 
             logger.info("WebSocket connection closed")
             
-            # 取消尚未完成的任务，避免协程泄漏
-            # 例如：如果前端断开了，就取消"从沙箱转发到前端"的任务，反之亦然
+            # 取消另一个仍在运行的通道，防止协程泄漏
             for task in pending:
                 task.cancel()
     
