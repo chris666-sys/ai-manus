@@ -45,7 +45,7 @@ class OpenAILLM(LLM):
         for attempt in range(max_retries + 1):  # every try
             response = None
             try:
-                if attempt > 0:
+                if attempt > 0: # attempt 依次是 0、1、2、3
                     delay = base_delay * (2 ** (attempt - 1))  # back off
                     logger.info(f"Retrying OpenAI API request (attempt {attempt + 1}/{max_retries + 1}) after {delay}s delay")
                     await asyncio.sleep(delay)

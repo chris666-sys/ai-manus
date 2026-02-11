@@ -120,6 +120,7 @@ class BaseTool:
         for _, method in inspect.getmembers(self, inspect.ismethod):
             if hasattr(method, '_function_name') and method._function_name == function_name:
                 # Filter parameters to match method signature
+                # 仅保留方法签名中声明的参数，避免传入多余参数
                 filtered_kwargs = self._filter_parameters(method, kwargs)
                 return await method(**filtered_kwargs)
         
