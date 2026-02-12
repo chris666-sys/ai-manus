@@ -118,6 +118,7 @@ class BaseTool:
             ValueError: Raised when tool doesn't exist
         """
         for _, method in inspect.getmembers(self, inspect.ismethod):
+            # 检查方法是否具有 _function_name 属性（由decorator装饰器添加），并且属性值等于 function_name
             if hasattr(method, '_function_name') and method._function_name == function_name:
                 # Filter parameters to match method signature
                 # 仅保留方法签名中声明的参数，避免传入多余参数

@@ -492,36 +492,36 @@ class DockerSandbox(Sandbox):
     @staticmethod
     @alru_cache(maxsize=128, typed=True)
     async def _resolve_hostname_to_ip(hostname: str) -> str:
-        """Resolve hostname to IP address
+        """将主机名解析为IP地址
         
         Args:
-            hostname: Hostname to resolve
+            hostname: 要解析的主机名
             
         Returns:
-            Resolved IP address, or None if resolution fails
+            解析后的IP地址，如果解析失败则返回None
             
         Note:
-            This method is cached using LRU cache with a maximum size of 128 entries.
-            The cache helps reduce repeated DNS lookups for the same hostname.
+            此方法使用LRU缓存，最大缓存128个条目。
+            缓存有助于减少对同一主机名的重复DNS查询。
         """
         try:
-            # First check if hostname is already in IP address format
+            # 首先检查主机名是否已经是IP地址格式
             try:
                 socket.inet_pton(socket.AF_INET, hostname)
-                # If successfully parsed, it's an IPv4 address format, return directly
+                # 如果成功解析，说明是IPv4地址格式，直接返回
                 return hostname
             except OSError:
-                # Not a valid IP address format, proceed with DNS resolution
+                # 不是有效的IP地址格式，继续进行DNS解析
                 pass
                 
-            # Use socket.getaddrinfo for DNS resolution
+            # 使用socket.getaddrinfo进行DNS解析
             addr_info = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
-            # Return the first IPv4 address found
+            # 返回找到的第一个IPv4地址
             if addr_info and len(addr_info) > 0:
-                return addr_info[0][4][0]  # Return sockaddr[0] from (family, type, proto, canonname, sockaddr), which is the IP address
+                return addr_info[0][4][0]  # 返回sockaddr[0]，即(family, type, proto, canonname, sockaddr)元组中的IP地址
             return None
         except Exception as e:
-            # Log error and return None on failure
+            # 记录错误并在失败时返回None
             logger.error(f"Failed to resolve hostname {hostname}: {str(e)}")
             return None
 
