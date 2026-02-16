@@ -48,16 +48,25 @@ class ShellService:
         return f"{username}@{hostname}:{display_dir} $"
 
     async def _create_process(self, command: str, exec_dir: str) -> asyncio.subprocess.Process:
-        """Create a new async subprocess"""
+        """
+        创建新的异步子进程，在指定目录下通过 bash 执行命令。
+
+        Args:
+            command: 要执行的 shell 命令字符串。
+            exec_dir: 子进程的工作目录（cwd）。
+
+        Returns:
+            asyncio.subprocess.Process: 已启动的子进程实例，stdout/stderr 通过 PIPE 可读。
+        """
         logger.debug(f"Creating process for command: {command} in directory: {exec_dir}")
         return await asyncio.create_subprocess_shell(
             command,
-            executable="/bin/bash",
-            cwd=exec_dir,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,  # Redirect stderr to stdout
-            stdin=asyncio.subprocess.PIPE,
-            limit=1024*1024  # Set buffer size to 1MB
+            executable="/bin/bash",           # 使用 bash 解析并执行命令
+            cwd=exec_dir,                     # 进程工作目录
+            stdout=asyncio.subprocess.PIPE,   # 标准输出通过管道读取
+            stderr=asyncio.subprocess.STDOUT, # 标准错误重定向到 stdout，便于统一读取
+            stdin=asyncio.subprocess.PIPE,    # 标准输入管道（当前未用于写入）
+            limit=1024 * 1024                 # 流缓冲区大小 1MB
         )
 
     async def _start_output_reader(self, session_id: str, process: asyncio.subprocess.Process):
@@ -72,11 +81,12 @@ class ShellService:
                         break
                     
                     output = buffer.decode('utf-8')
-                    # Add output to shell session
+                    # 将输出追加到会话的完整输出字符串中
                     shell = self.active_shells.get(session_id)
                     if shell:
                         shell["output"] += output
-                        # Update the output of the latest console record
+                        # 同时将输出追加到控制台历史中最新一条记录（最后一条）的输出字段
+                        # 这样每条命令的输出就能被正确关联到对应的 ConsoleRecord 中
                         if shell["console"]:
                             shell["console"][-1].output += output
                 except Exception as e:
@@ -89,21 +99,59 @@ class ShellService:
 
     async def exec_command(self, session_id: str, exec_dir: Optional[str], command: str) -> ShellExecResult:
         """
-        Asynchronously execute a command in the specified shell session
+        在指定 shell 会话中异步执行命令。
+
+        支持新建会话与复用已有会话：新建时创建子进程并注册会话；
+        已有会话时先终止旧进程（若仍在运行），再创建新进程并更新会话信息。
+        会尝试等待进程结束（最多 5 秒），若超时则返回 running 状态，由调用方后续轮询或等待。
+
+        Args:
+            session_id: 会话唯一标识，用于区分不同 shell 会话。
+            exec_dir: 命令工作目录，为 None 时使用当前用户主目录。
+            command: 要执行的 shell 命令字符串。
+
+        Returns:
+            ShellExecResult: 包含 session_id、command、status（completed/running）、
+                若已完成则含 returncode 和 output，若超时则仅含 running 状态。
+
+        Raises:
+            BadRequestException: exec_dir 所指目录不存在时抛出。
+            AppException: 执行过程中发生其他异常时抛出，附带 session_id 与 command。
+
+        shell的数据格式示例
+        shell = {
+            "process": <asyncio.subprocess.Process object>,
+            "exec_dir": "/home/user/project",
+            "output": "xxxxxxxxxx任意字符、文件路径等",
+            "console": [
+                ConsoleRecord(
+                    ps1="user@host:/home/user/project $",
+                    command="ls",
+                    output="file1.txt\nfile2.txt\n"
+                ),
+                ConsoleRecord(
+                    ps1="user@host:/home/user/project $",
+                    command="pwd",
+                    output="/home/user/project\n"
+                )
+            ]
+        }
         """
         logger.info(f"Executing command in session {session_id}: {command}")
+
+        # 未指定工作目录时，使用当前用户主目录
         if not exec_dir:
             exec_dir = os.path.expanduser("~")
-        # Ensure directory exists
+        # 校验工作目录是否存在，不存在则直接报错
         if not os.path.exists(exec_dir):
             logger.error(f"Directory does not exist: {exec_dir}")
             raise BadRequestException(f"Directory does not exist: {exec_dir}")
-        
+
         try:
-            # Create PS1 format
+            # 生成当前环境的命令行提示符（如 user@host:~ $），用于控制台展示
             ps1 = self._format_ps1(exec_dir)
-            
-            # If it's a new session, create a new process
+
+            # 分支一：该 session_id 尚未存在，视为新会话，需要创建新进程并登记
             if session_id not in self.active_shells:
                 logger.debug(f"Creating new shell session: {session_id}")
                 process = await self._create_process(command, exec_dir)
@@ -111,50 +159,51 @@ class ShellService:
                     "process": process,
                     "exec_dir": exec_dir,
                     "output": "",
+                    # 控制台历史：首条为当前命令（提示符+命令），output 由 _start_output_reader 后续写入
                     "console": [ConsoleRecord(ps1=ps1, command=command, output="")]
                 }
-                # Start the output reader coroutine
+                # 启动后台协程持续读取该进程的 stdout，并写入会话的 output 与最新一条 console 记录
                 asyncio.create_task(self._start_output_reader(session_id, process))
             else:
-                # Execute command in an existing session
+                # 分支二：该 session_id 已存在，在已有会话中执行新命令（会替换掉当前会话正在跑的进程）
                 logger.debug(f"Using existing shell session: {session_id}")
                 shell = self.active_shells[session_id]
                 old_process = shell["process"]
-                
-                # If the old process is still running, terminate it first
+
+                # 若上一轮进程尚未退出，先尝试优雅终止（SIGTERM），超时 1 秒后强制 kill
                 if old_process.returncode is None:
                     logger.debug(f"Terminating previous process in session: {session_id}")
                     try:
                         old_process.terminate()
                         await asyncio.wait_for(old_process.wait(), timeout=1)
-                    except:
-                        # If graceful termination fails, force kill
+                    except Exception:
+                        # 优雅退出失败（超时或异常），则强制杀死进程
                         logger.warning(f"Forcefully killing process in session: {session_id}")
                         old_process.kill()
-                
-                # Create a new process
+
+                # 为新命令创建新的子进程
                 process = await self._create_process(command, exec_dir)
-                
-                # Update session information
+
+                # 用新进程和新工作目录更新会话元数据，并清空上一轮输出
                 self.active_shells[session_id]["process"] = process
                 self.active_shells[session_id]["exec_dir"] = exec_dir
-                self.active_shells[session_id]["output"] = ""  # Clear previous output
-                
-                # Record command console record, but output is initially empty, will be updated later
+                self.active_shells[session_id]["output"] = ""
+
+                # 追加一条新的控制台记录（命令与 PS1），输出先为空，由 _start_output_reader 后续追加
                 shell["console"].append(ConsoleRecord(ps1=ps1, command=command, output=""))
-                
-                # Start the output reader coroutine
+
+                # 同样启动输出读取协程，将新进程的 stdout 写入当前会话
                 asyncio.create_task(self._start_output_reader(session_id, process))
-            
-            # Try to wait for the process to complete (max 5 seconds)
+
+            # 尝试在限定时间内等待进程结束（此处为 5 秒），以便能立即返回“已完成”的结果
             try:
                 logger.debug(f"Waiting for process completion in session: {session_id}")
                 wait_result = await self.wait_for_process(session_id, seconds=5)
                 if wait_result.returncode is not None:
-                    # Process has completed, get the output
+                    # 进程已在 5 秒内结束，通过 view_shell 拉取当前会话的完整输出并返回已完成结果
                     logger.debug(f"Process completed with code: {wait_result.returncode}")
                     view_result = await self.view_shell(session_id)
-                    
+
                     return ShellExecResult(
                         session_id=session_id,
                         command=command,
@@ -163,17 +212,17 @@ class ShellService:
                         output=view_result.output,
                     )
             except BadRequestException:
-                # Wait timeout, process still running
+                # 等待超时或会话无效（如 wait_for_process 内部抛 BadRequestException），视为进程仍在运行
                 logger.debug(f"Process still running after timeout in session: {session_id}")
                 pass
             except Exception as e:
-                # Other exceptions, ignore and continue
+                # 其他异常（如网络、内部错误）仅打日志，不中断流程，下面会返回 running
                 logger.warning(f"Exception while waiting for process: {str(e)}")
                 pass
-            
-            # Get current console records
+
+            # 进程未在 5 秒内结束，或等待过程出现异常：返回“运行中”状态，调用方可轮询 view_shell / wait_for_process
             console = self.get_console_records(session_id)
-            
+
             return ShellExecResult(
                 session_id=session_id,
                 command=command,
@@ -188,25 +237,39 @@ class ShellService:
 
     async def view_shell(self, session_id: str, console: bool = False) -> ShellViewResult:
         """
-        Asynchronously view the content of the specified shell session
+        异步查看指定 shell 会话的当前内容。
+
+        返回该会话迄今为止的完整标准输出（去除 ANSI 转义码），
+        并可根据参数决定是否附带按条划分的控制台历史（每条含 ps1、命令与输出）。
+
+        Args:
+            session_id: 会话唯一标识。
+            console: 是否在结果中包含控制台记录列表（每条为 ConsoleRecord）。
+                    True 时返回 get_console_records(session_id) 的结果，便于前端按条渲染。
+
+        Returns:
+            ShellViewResult: 包含 output（去 ANSI 的完整输出）、session_id、以及可选的 console 列表。
+
+        Raises:
+            ResourceNotFoundException: 当 session_id 对应的会话不存在时抛出。
         """
         logger.debug(f"Viewing shell content for session: {session_id}")
         if session_id not in self.active_shells:
             logger.error(f"Session ID not found: {session_id}")
             raise ResourceNotFoundException(f"Session ID does not exist: {session_id}")
-        
+
         shell = self.active_shells[session_id]
-        
-        # Get raw output and filter ANSI escape codes
+
+        # 取出会话当前累积的原始输出，并去掉 ANSI 转义序列，便于纯文本展示或存储
         raw_output = shell["output"]
         clean_output = self._remove_ansi_escape_codes(raw_output)
-        
-        # Get command console records with filtered output
+
+        # 仅当调用方需要时，才拉取“按条”的控制台历史（每条含 ps1、command、output）
         if console:
             console = self.get_console_records(session_id)
         else:
             console = None
-        
+
         return ShellViewResult(
             output=clean_output,
             session_id=session_id,
