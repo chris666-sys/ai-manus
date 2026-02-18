@@ -7,13 +7,18 @@ from app.core.config import get_settings
 from app.domain.models.tool_result import ToolResult
 import logging
 
-# Set up logger for this module
+# 本模块日志
 logger = logging.getLogger(__name__)
 
 class PlaywrightBrowser:
-    """Playwright client that provides specific implementation of browser operations"""
+    """基于 Playwright 的浏览器客户端，提供浏览器操作的具体实现"""
     
     def __init__(self, cdp_url: str):
+        """初始化浏览器客户端
+        
+        Args:
+            cdp_url: Chrome DevTools Protocol 连接地址
+        """
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
         self.playwright = None
@@ -22,19 +27,19 @@ class PlaywrightBrowser:
         self.cdp_url = cdp_url
         
     async def initialize(self):
-        """Initialize and ensure resources are available"""
-        # Add retry logic
+        """初始化并确保浏览器资源可用（含重试逻辑）"""
+        # 重试逻辑
         max_retries = 5
-        retry_delay = 1  # Initial wait 1 second
+        retry_delay = 1  # 初始等待 1 秒
         for attempt in range(max_retries):
             try:
                 self.playwright = await async_playwright().start()
-                # Connect to existing Chrome instance
+                # 通过 CDP 连接已有 Chrome 实例
                 self.browser = await self.playwright.chromium.connect_over_cdp(self.cdp_url)
-                # Get all contexts
+                # 获取所有浏览器上下文
                 contexts = self.browser.contexts
                 if contexts and len(contexts[0].pages) == 1:
-                    # Check if it's the initial page (by URL)
+                    # 判断是否为初始页（根据 URL）
                     page = contexts[0].pages[0]
                     page_url = await page.evaluate("window.location.href")
                     if (
@@ -43,111 +48,101 @@ class PlaywrightBrowser:
                         page_url == "chrome://new-tab-page/" or 
                         not page_url
                     ):
-                        # Only use it when it's the initial page and only one tab
+                        # 仅在初始页且只有一个标签页时复用该页
                         self.page = page
                     else:
-                        # Not the initial page, create a new page
+                        # 非初始页则新建页面
                         self.page = await contexts[0].new_page()
                 else:
-                    # Create a new page in other cases
+                    # 其他情况新建页面
                     context = contexts[0] if contexts else await self.browser.new_context()
                     self.page = await context.new_page()
                 return True
             except Exception as e:
-                # Clean up failed resources
+                # 清理失败时占用的资源
                 await self.cleanup()
                 
-                # Return error if maximum retry count is reached
+                # 达到最大重试次数则返回失败
                 if attempt == max_retries - 1:
                     logger.error(f"Initialization failed (retried {max_retries} times): {e}")
                     return False
                 
-                # Otherwise increase waiting time (exponential backoff strategy)
-                retry_delay = min(retry_delay * 2, 10)  # Maximum wait 10 seconds
+                # 否则按指数退避增加等待时间，最多等待 10 秒
+                retry_delay = min(retry_delay * 2, 10)
                 logger.warning(f"Initialization failed, will retry in {retry_delay} seconds: {e}")
                 await asyncio.sleep(retry_delay)
 
     async def cleanup(self):
-        """Clean up Playwright resources, first close all tabs, then close the browser"""
+        """清理 Playwright 资源：先关闭所有标签页，再关闭浏览器"""
         try:
-            # If browser exists, first close all tabs
+            # 若浏览器存在，先关闭所有标签页
             if self.browser:
-                # Get all contexts
                 contexts = self.browser.contexts
                 if contexts:
                     for context in contexts:
-                        # Get all pages in the context
                         pages = context.pages
-                        # Close all pages
                         for page in pages:
-                            # Avoid closing self.page multiple times
+                            # 避免重复关闭 self.page
                             if page != self.page or (self.page and not self.page.is_closed()):
                                 await page.close()
             
-            # Ensure the current page is closed (if it exists and is not closed)
+            # 确保当前页已关闭（若存在且未关闭）
             if self.page and not self.page.is_closed():
                 await self.page.close()
                 
-            # Close the browser
             if self.browser:
                 await self.browser.close()
                 
-            # Stop playwright
             if self.playwright:
                 await self.playwright.stop()
                 
         except Exception as e:
             logger.error(f"Error occurred when cleaning up resources: {e}")
         finally:
-            # Reset references
+            # 重置引用
             self.page = None
             self.browser = None
             self.playwright = None
     
     async def _ensure_browser(self):
-        """Ensure the browser is started"""
+        """确保浏览器已启动"""
         if not self.browser or not self.page:
             if not await self.initialize():
                 raise Exception("Unable to initialize browser resources")
     
     async def _ensure_page(self):
-        """Ensure the page is created and update to the current active tab (rightmost tab)"""
+        """确保页面已创建，并同步为当前活动标签页（最右侧标签页）"""
         await self._ensure_browser()
         if not self.page:
             self.page = await self.browser.new_page()
         else:
-            # Get all contexts
             contexts = self.browser.contexts
             if contexts:
-                # Get all pages in the current context
                 current_context = contexts[0]
                 pages = current_context.pages
                 
                 if pages:
-                    # Get the rightmost tab (usually the most recently opened page)
+                    # 取最右侧标签页（通常为最近打开的页面）
                     rightmost_page = pages[-1]
-                    
-                    # Update if the current page is not the rightmost tab
                     if self.page != rightmost_page:
-                        # Update to the rightmost tab
                         self.page = rightmost_page
     
     async def wait_for_page_load(self, timeout: int = 15) -> bool:
-        """Wait for the page to finish loading, waiting up to the specified timeout
+        """等待页面加载完成，最多等待指定时长
         
         Args:
-            timeout: Maximum wait time (seconds), default is 15 seconds
+            timeout: 最大等待时间（秒），默认 15 秒
             
         Returns:
-            bool: Whether successfully waited for the page to load completely
+            bool: 是否成功等到页面完全加载
         """
         await self._ensure_page()
         
         start_time = asyncio.get_event_loop().time()
-        check_interval = 5  # Check every 5 seconds
+        check_interval = 5  # 每 5 秒检查一次
         
         while asyncio.get_event_loop().time() - start_time < timeout:
-            # Check if the page has completely loaded
+            # 检查页面是否已完全加载
             is_loaded = await self.page.evaluate("""() => {
                 return document.readyState === 'complete';
             }""")
@@ -155,16 +150,15 @@ class PlaywrightBrowser:
             if is_loaded:
                 return True
                 
-            # Wait for a while before checking again
             await asyncio.sleep(check_interval)
         
-        # Timeout, page loading not completed
+        # 超时，页面未加载完成
         return False
     
     async def _extract_content(self) -> Dict[str, Any]:
-        """Extract content from the current page"""
+        """从当前页面提取可见内容并转为 Markdown（经 LLM 整理）"""
 
-        # Execute JavaScript to get elements in the viewport    
+        # 在页面内执行 JS，获取视口内元素
         visible_content = await self.page.evaluate("""() => {
             const visibleElements = [];
             const viewportHeight = window.innerHeight;
@@ -211,10 +205,10 @@ class PlaywrightBrowser:
             return '<div>' + visibleElements.join('') + '</div>';
         }""")
 
-        
-        # Convert to Markdown
+        # 转为 Markdown
         markdown_content = markdownify(visible_content)
 
+        # 限制内容最大长度为 50000 字符，避免超出 LLM 的 token 限制
         max_content_length = min(50000, len(markdown_content))
         response = await self.llm.ask([{
             "role": "system",
@@ -229,15 +223,17 @@ class PlaywrightBrowser:
         return response.get("content", "")
     
     async def view_page(self) -> ToolResult:
-        """View visible elements within the current page's viewport and convert to Markdown format"""
+        """查看当前页面视口内可见元素并转换为 Markdown 格式"""
+        # 确保页面已创建
         await self._ensure_page()
         
-        # Wait for the page to load completely, maximum wait 15 seconds
+        # 等待页面完全加载，最多等待15秒
         await self.wait_for_page_load()
         
-        # First update the interactive elements cache
+        # 首先更新交互式元素缓存
         interactive_elements = await self._extract_interactive_elements()
         
+        # 返回包含交互式元素和页面内容的工具结果
         return ToolResult(
             success=True,
             data={
@@ -247,13 +243,13 @@ class PlaywrightBrowser:
         )
     
     async def _extract_interactive_elements(self) -> List[str]:
-        """Return a list of visible interactive elements on the page, formatted as index:<tag>text</tag>"""
+        """提取当前页面视口内可见的交互元素，返回格式为 index:<tag>text</tag> 的列表"""
         await self._ensure_page()
         
-        # Clear the current page's cache to ensure we always get the latest list of elements
+        # 清空当前页缓存，保证拿到最新元素列表
         self.page.interactive_elements_cache = []
         
-        # Execute JavaScript to get interactive elements in the viewport
+        # 在页面内执行 JS，获取视口内的交互元素
         interactive_elements = await self.page.evaluate("""() => {
             const interactiveElements = [];
             const viewportHeight = window.innerHeight;
@@ -394,10 +390,10 @@ class PlaywrightBrowser:
             return interactiveElements;
         }""")
         
-        # Update cache
+        # 更新缓存
         self.page.interactive_elements_cache = interactive_elements
         
-        # Format element information in specified format
+        # 按指定格式组装元素信息
         formatted_elements = []
         for el in interactive_elements:
             formatted_elements.append(f"{el['index']}:<{el['tag']}>{el['text']}</{el['tag']}>")
@@ -405,15 +401,15 @@ class PlaywrightBrowser:
         return formatted_elements
     
     async def navigate(self, url: str, timeout: Optional[int] = 15000) -> ToolResult:
-        """Navigate to the specified URL
+        """跳转到指定 URL
         
         Args:
-            url: URL to navigate to
-            timeout: Navigation timeout (milliseconds), default is 60 seconds
+            url: 要访问的 URL
+            timeout: 导航超时（毫秒），默认 15000（15 秒）
         """
         await self._ensure_page()
         try:
-            # Clear cache as the page is about to change
+            # 页面即将变化，清空交互元素缓存
             self.page.interactive_elements_cache = []
             try:
                 await self.page.goto(url, timeout=timeout)
@@ -429,25 +425,24 @@ class PlaywrightBrowser:
             return ToolResult(success=False, message=f"Failed to navigate to {url}: {str(e)}")
     
     async def restart(self, url: str) -> ToolResult:
-        """Restart the browser and navigate to the specified URL"""
+        """重启浏览器并跳转到指定 URL"""
         await self.cleanup()
         return await self.navigate(url)
 
     
     async def _get_element_by_index(self, index: int) -> Optional[Any]:
-        """Get element by index using data-manus-id selector
+        """根据索引用 data-manus-id 选择器获取元素
         
         Args:
-            index: Element index
+            index: 元素索引
             
         Returns:
-            The found element, or None if not found
+            找到的元素，未找到则返回 None
         """
-        # Check if there are cached elements
+        # 检查是否有缓存的交互元素
         if not hasattr(self.page, 'interactive_elements_cache') or not self.page.interactive_elements_cache or index >= len(self.page.interactive_elements_cache):
             return None
         
-        # Use data-manus-id selector
         selector = f'[data-manus-id="manus-element-{index}"]'
         return await self.page.query_selector(selector)
     
@@ -457,7 +452,7 @@ class PlaywrightBrowser:
         coordinate_x: Optional[float] = None,
         coordinate_y: Optional[float] = None
     ) -> ToolResult:
-        """Click an element"""
+        """点击元素：可按索引点击交互元素，或按坐标点击"""
         await self._ensure_page()
         if coordinate_x is not None and coordinate_y is not None:
             await self.page.mouse.click(coordinate_x, coordinate_y)
@@ -467,7 +462,7 @@ class PlaywrightBrowser:
                 if not element:
                     return ToolResult(success=False, message=f"Cannot find interactive element with index {index}")
                 
-                # Check if the element is visible
+                # 检查元素是否可见
                 is_visible = await self.page.evaluate("""(element) => {
                     if (!element) return false;
                     const rect = element.getBoundingClientRect();
@@ -482,16 +477,14 @@ class PlaywrightBrowser:
                 }""", element)
                 
                 if not is_visible:
-                    # Try to scroll to the element position
+                    # 尝试滚动到元素位置
                     await self.page.evaluate("""(element) => {
                         if (element) {
                             element.scrollIntoView({behavior: 'smooth', block: 'center'});
                         }
                     }""", element)
-                    # Wait for the element to become visible
                     await asyncio.sleep(1)
                 
-                # Try to click the element
                 await element.click(timeout=5000)
             except Exception as e:
                 return ToolResult(success=False, message=f"Failed to click element: {str(e)}")
@@ -505,7 +498,7 @@ class PlaywrightBrowser:
         coordinate_x: Optional[float] = None,
         coordinate_y: Optional[float] = None
     ) -> ToolResult:
-        """Input text"""
+        """输入文本：可按索引在指定元素输入，或先按坐标点击再输入；可选是否按回车"""
         await self._ensure_page()
         if coordinate_x is not None and coordinate_y is not None:
             await self.page.mouse.click(coordinate_x, coordinate_y)
@@ -516,12 +509,11 @@ class PlaywrightBrowser:
                 if not element:
                     return ToolResult(success=False, message=f"Cannot find interactive element with index {index}")
                 
-                # Try to use fill() method, but catch possible errors
                 try:
                     await element.fill("")
                     await element.type(text)
                 except Exception as e:
-                    # If fill() fails, use type() method directly
+                    # fill 失败时改为先点击再键盘输入
                     await element.click()
                     await self.page.keyboard.type(text)
             except Exception as e:
@@ -536,13 +528,13 @@ class PlaywrightBrowser:
         coordinate_x: float,
         coordinate_y: float
     ) -> ToolResult:
-        """Move the mouse"""
+        """将鼠标移动到指定坐标"""
         await self._ensure_page()
         await self.page.mouse.move(coordinate_x, coordinate_y)
         return ToolResult(success=True)
     
     async def press_key(self, key: str) -> ToolResult:
-        """Simulate key press"""
+        """模拟按下指定按键"""
         await self._ensure_page()
         await self.page.keyboard.press(key)
         return ToolResult(success=True)
@@ -552,14 +544,13 @@ class PlaywrightBrowser:
         index: int,
         option: int
     ) -> ToolResult:
-        """Select dropdown option"""
+        """在下拉框中按索引选择选项"""
         await self._ensure_page()
         try:
             element = await self._get_element_by_index(index)
             if not element:
                 return ToolResult(success=False, message=f"Cannot find selector element with index {index}")
             
-            # Try to select the option
             await element.select_option(index=option)
             return ToolResult(success=True)
         except Exception as e:
@@ -569,7 +560,7 @@ class PlaywrightBrowser:
         self,
         to_top: Optional[bool] = None
     ) -> ToolResult:
-        """Scroll up"""
+        """向上滚动页面；to_top 为 True 时滚动到顶部"""
         await self._ensure_page()
         if to_top:
             await self.page.evaluate("window.scrollTo(0, 0)")
@@ -581,7 +572,7 @@ class PlaywrightBrowser:
         self,
         to_bottom: Optional[bool] = None
     ) -> ToolResult:
-        """Scroll down"""
+        """向下滚动页面；to_bottom 为 True 时滚动到底部"""
         await self._ensure_page()
         if to_bottom:
             await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -593,33 +584,31 @@ class PlaywrightBrowser:
         self,
         full_page: Optional[bool] = False
     ) -> bytes:
-        """Take a screenshot of the current page
+        """对当前页面截图
         
         Args:
-            full_page: Whether to capture the full page or just the viewport
+            full_page: 是否截取整页，False 则仅截取当前视口
             
         Returns:
-            bytes: PNG screenshot data
+            bytes: PNG 截图二进制数据
         """
         await self._ensure_page()
         
-        # Configure screenshot options
         screenshot_options = {
             "full_page": full_page,
             "type": "png"
         }
         
-        # Return bytes data directly
         return await self.page.screenshot(**screenshot_options)
     
     async def console_exec(self, javascript: str) -> ToolResult:
-        """Execute JavaScript code"""
+        """在页面上下文中执行 JavaScript 代码"""
         await self._ensure_page()
         result = await self.page.evaluate(javascript)
         return ToolResult(success=True, data={"result": result})
     
     async def console_view(self, max_lines: Optional[int] = None) -> ToolResult:
-        """View console output"""
+        """查看控制台输出，可选只取最近 max_lines 行"""
         await self._ensure_page()
         logs = await self.page.evaluate("""() => {
             return window.console.logs || [];

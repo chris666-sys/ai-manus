@@ -21,9 +21,9 @@ class DockerSandbox(Sandbox):
         """Initialize Docker sandbox and API interaction client"""
         self.client = httpx.AsyncClient(timeout=600)
         self.ip = ip
-        self.base_url = f"http://{self.ip}:8080"
-        self._vnc_url = f"ws://{self.ip}:5901"
-        self._cdp_url = f"http://{self.ip}:9222"
+        self.base_url = f"http://{self.ip}:8080" # 容器内的API URL(fastapi端口)，用于与sandbox交互。
+        self._vnc_url = f"ws://{self.ip}:5901" # 容器内的VNC URL（websockify端口），用于远程桌面连接。
+        self._cdp_url = f"http://{self.ip}:9222" # 容器内的CDP URL，连接到socat,用于浏览器自动化。socat将9222端口转发到8222端口，8222端口是本机Chrome的CDP端口。
         self._container_name = container_name
     
     @property
